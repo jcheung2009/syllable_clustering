@@ -5,8 +5,8 @@ from scipy import io
 from scipy.io import wavfile
 from scipy import ndimage
 from scipy import signal
-#from pylab import specgram, psd
-from matplotlib.mlab import psd
+from pylab import specgram, psd
+#from matplotlib.mlab import psd
 import numpy as np
 import sklearn as skl
 from sklearn import cluster
@@ -40,7 +40,7 @@ syls.pk: a python pickle file containing the raw segmented syllable data.
 It creates a summary file with the following information:
 Syllable number predicted by BIC
 Syllable number predicted by likelihhod
-The number of syllables analyzed
+The number of syllables analized
 the length of the reference set
 
 
@@ -56,7 +56,7 @@ def findobject(file):
  return(objs)
 
 def impwav(a):
- """Imports a wave file as an array where a[1] 
+ """Imports a wave file as an array where a[1]
  is the sampling frequency and a[0] is the data"""
  out=[]
  try:
@@ -74,7 +74,7 @@ def impcbin(a):
     return out
 
 def outwave(filename,array):
- """Exports a numpy array (or just a regular python array) 
+ """Exports a numpy array (or just a regular python array)
  as a wave file. It expects an array of the following format: (speed,data)"""
  sc.io.wavfile.write(filename,array[0],array[1])
 
@@ -141,66 +141,41 @@ def strat_chunks(l,n):
   out.append(l[i::n])
  return out
 
-def DBSCANcluster(array_of_syls):
- """takes an array of segmented sylables and clusters them by 
- taking psds (welch method) using DBSCAN"""
- nfft=30000
- fs=32000
- segstart=int(600/(fs/nfft))
- segend=int(16000/(fs/nfft))
- welchpsds=[psd(x,NFFT=nfft,Fs=fs) for x in array_of_syls]
- segedpsds=[x[0][segstart:segend] for x in welchpsds] #removes any values below 650 and above 10k
- d=sqformdistmat([norm(x) for x in segedpsds])
- #d=sqformdistmat([x for x in segedpsds])
- s=1-(d/np.max(d))
- db=skl.cluster.DBSCAN(eps=0.99, min_samples=5).fit(s) 
- labels = db.labels_
- # Number of clusters in labels, ignoring noise if present.
- n_clusters_ = len(set(labels)) - (1 if -1 in labels else 0)
- no_syls=len(array_of_syls)
- no_clustered_syls=len([x for x in labels if -1 != x])
- percent_clustered=(float(no_clustered_syls)/float(no_syls))
- print min(labels)
- print max(labels)
- print 'Number of sylables %d' % no_syls
- print 'Number of clustered sylables %d' % no_clustered_syls
- print 'Percent of sylables clustered %0.3f' % percent_clustered
- print 'Estimated number of clusters: %d' % n_clusters_
- print 'mean cluster size %0.3f' % np.average([list(labels).count(y) for y in range(0,int(max(labels))+1)])
- print 'size of each cluster'
- print [list(labels).count(y) for y in range(0,int(max(labels))+1)]
- return labels,segedpsds,s
- #print ("Silhouette Coefficient: %0.3f" % metrics.silhouette_score(d, labels, metric='precomputed'))
-
-def EMofgmmcluster(array_of_syls,setsize):
- """takes an array of segmented sylables and clusters them by 
+def EMofgmmcluster(array_of_syls,syll_types,all_labels,plot=False):
+ """takes an array of segmented sylables and clusters them by
  taking psds (welch method) and fitting a mixture model"""
- t0 = tm.time()
  nfft=2**14
  fs=32000
-
- if setsize == 'all':
-  syls_samp = array_of_syls
- else:
-  setsize = setsize*3 #training set = setsize, test set = setsize*2
-  syls_samp = np.random.choice(array_of_syls,size=setsize,replace=False)
-
  segstart=int(round(600/(fs/float(nfft))))
  segend=int(round(16000/(fs/float(nfft))))
- welchpsds=[psd(x,NFFT=nfft,Fs=fs) for x in syls_samp]
+ welchpsds=[psd(x,NFFT=nfft,Fs=fs) for x in array_of_syls]
  segedpsds=[norm(x[0][segstart:segend]) for x in welchpsds]
- models=range(2,16)
+ for x in range(len(array_of_syls)): #appends duration of syllable in seconds at end of PSD vector
+  segedpsds[x] = np.append(segedpsds[x],len(array_of_syls[x])/float(fs))
+ models = len(syll_types)+1
+ #pca=skl.decomposition.PCA(n_components=16000)
+ #segedpsds=pca.fit_transform(segedpsds)
 
- d=sc.spatial.distance.squareform(sc.spatial.distance.pdist(segedpsds,'sqeuclidean'))
- d=d.T[:50].T
- s=d
+ weights = np.ones(len(segedpsds[0]))
+ weights[-1] = 2
+ mean_param = []
+ for syll_type in syll_types:
+     syll_ind = [i for i,label in enumerate(all_labels) if label==syll_type]
+     syll_psds = [segedpsds[i] for i in syll_ind]
+     mean_param.append(np.mean(syll_psds,axis=0))
+ # s = sc.spatial.distance.cdist(segedpsds,basis_set,'wminkowski',p=2,w=weights)
+ # d=sc.spatial.distance.cdist(mean_param,basis_set,'wminkowski',p=2,w=weights)
+ gmm = mixture.GMM(n_components=models,n_iter=100000,n_init=5,covariance_type='full')
+ gmm.means_ = np.array(mean_param)
+ gmm.fit(segedpsds)
+
+ s=d.T[:1000].T
  loglikelihood=[]
  liklis=[]
  bic=[]
  aic=[]
  k=3
  reps=1
-
  for x in models:
   errs=[]
   bics=[]
@@ -213,59 +188,36 @@ def EMofgmmcluster(array_of_syls,setsize):
     [trainset.extend(ss[n]) for n in [z for z in range(len(ss)) if z!=y]]
     gmm = mixture.GMM(n_components=x, n_iter=100000,n_init=5, covariance_type='full')
     gmm.fit(np.array(trainset))
-    likeli=sum(gmm.score(np.array(testset))) #log probability of each data point under model
-    errs.append(likeli) #three sets of log probabilities
+    likeli=sum(gmm.score(np.array(testset)))
+    errs.append(likeli)
     trainset=np.array(trainset)
     bics.append(gmm.bic(trainset))
     aics.append(gmm.aic(trainset))
-  loglikelihood.append(np.mean(errs)) #average the log probabilities from fits to three testsets for each nummodel
-  liklis.append(errs) #three sets of log probabilities for each nummodel test
-  bic.append(bics) #three bic score for each testset for each nummodel
+  loglikelihood.append(np.mean(errs))
+  liklis.append(errs)
+  bic.append(bics)
   aic.append(aics)
- bic=[np.mean(x) for x in bic] #average bic score for each nummodel
-
- plt.figure()
- plt.subplot(3,1,1)
- plt.plot(bic)
- plt.ylabel('average bic')
- plt.subplot(3,1,2)
- plt.plot([np.mean(x) for x in aic])
- plt.ylabel('average aic')
- plt.subplot(3,1,3)
- plt.plot([np.mean(x) for x in liklis])
- plt.ylabel('average likelihood')
- plt.xlabel('number of models')
- plt.show(block=False)
-
- plt.figure()
- plt.subplot(3,1,1)
- plt.plot(-2*np.array(loglikelihood))
- plt.ylabel('loglikelihood')
- plt.xlabel('number of models')
- plt.subplot(3,1,2)
- plt.plot(np.diff(loglikelihood))
- plt.ylabel('difference in loglikelihood')
- plt.xlabel('number of models')
- plt.subplot(3,1,3)
+ bic=[np.mean(x) for x in bic]
  pvals=[sc.stats.mannwhitneyu(liklis[x],liklis[x+1]) for x in range(len(liklis)-1)]
- plt.plot([x[1] for x in pvals])
- plt.ylabel('pvals for mannwhitney test of loglikelihood scores')
- plt.xlabel('number of models')
- plt.show(block=False)
-
  mins=[x for x in range(len(pvals)) if pvals[x][1]>0.01]
  print "likelihood optimal k"
  print min(mins)+2
  print "optimal k"
  print bic.index(min(bic))+2
  gmm= mixture.GMM(n_components=bic.index(min(bic))+2,n_iter=100000,n_init=10, covariance_type='full')
-
  print gmm.get_params()
- gmm.fit(np.array(s))
- labs=gmm.predict(np.array(s))
- scores=gmm.score(np.array(s))
- t1 = tm.time()
- print t1-t0
+ gmm.fit(np.array(d))
+ labs=gmm.predict(np.array(d))
+ scores=gmm.score(np.array(d))
+
+ if plot==True:
+  fig,axes = plt.subplots(nrows=bic.index(min(bic))+2,ncols=1)
+  for i in range(len(axes)):
+       syl = []
+       for x in np.where(labs==i)[0]: syl.extend(np.pad(array_of_syls[x],(160,160),'constant',constant_values=(0,0)))
+       axes[i].specgram(syl,NFFT=512,Fs=32000,noverlap=510)
+  plt.tight_layout()
+
  return segedpsds,labs,scores,bic.index(min(bic))+2,min(mins)+2
 
 def eucliddist(a,b):
@@ -345,58 +297,13 @@ def main():
   sylables.extend(syls)
   sylable_ids.extend([ksong]*len(syls))
   song_data_rec.append(song_data)
- segedpsds,labs,scores,bic,likli = EMofgmmcluster(sylables)
- return segedpsds, labs, scores, bic, likli
+ all_labels = np.unicode(u'')
+ for song_data in song_data_rec:
+     all_labels=all_labels+song_data['labels'][0]
+ syll_types = [i for i in set(all_labels) if i.isalpha()]
+ segedpsds,labs,scores,bic,likli = EMofgmmcluster(sylables,syll_types,all_labels,plot=False)
+ return segedpsds, labs, scores, bic, likli, sylables, syll_types
 
 #main program
 if __name__ =='__main__':
-
- path=sys.argv[1]
- batchfile = path+'/batch.keep'
- ff = open(batchfile)
- files = [line.rstrip() for line in ff]
- ff.close()
- #files=os.listdir(path)
- filename=path.split('/')[-1:][0]
- #files=[file for file in files if '.wav' == file[-4:]]
- sylpath=path+'/summarydat_30foldxv_50_syls/'
- if os.path.exists(sylpath)==False: os.mkdir(sylpath)
- clustno_summary_out=open(sylpath+filename+'clustno_summary_out.txt','w')
- sylables=[]
- fil_objs={}
- for file in files:
-  print file
-  if 'cbin' in file:
-   song = impcbin(path+'/'+file)
-  elif 'wav' in file:
-   song=impwav(path+file)
-  if len(song)<1: break
-  syls,objs=(getsyls(song))
-  fil_objs[file]=objs
-  for x in syls: sylables.append(x)
-  print len(sylables)
-  segedpsds,labs, scores,sylno_bic,sylno_likli=EMofgmmcluster(sylables[:])
-  pk.dump(segedpsds,open(sylpath+filename+'psds.pk','w'))
-  pk.dump(labs,open(sylpath+filename+'labs.pk','w'))
-  pk.dump(scores,open(sylpath+filename+'scores.pk','w'))
-  pk.dump(fil_objs,open(sylpath+filename+'seged_dict.pk','w'))
-  print max(labs)
-  print min(labs)
-  print len(scores)
-  print len(sylables)
-  pk.dump(sylables[:3000],open(sylpath+filename+'syls.pk','w'))
-  avpsds=[]
-  for x in range(-1,int(max(labs))+1):
-   tmpsyls=[]
-  for n in range(0,len(segedpsds)):
-   if labs[n]==x:
-    tmpsyls.append(np.array(segedpsds[n]))
-    avpsds.append(np.array(tmpsyls))
- clustno_summary_out.write(str(sylno_bic)+'\n')
- clustno_summary_out.write(str(sylno_likli)+'\n')
- clustno_summary_out.write(str(len(sylables))+'\n')
- clustno_summary_out.write('50\n')
- clustno_summary_out.close()
-
-
-
+ main()

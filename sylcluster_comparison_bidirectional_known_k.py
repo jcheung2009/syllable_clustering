@@ -6,13 +6,12 @@ from scipy.io import wavfile
 from scipy import ndimage
 from scipy import signal
 from scipy import spatial
-from pylab import specgram, psd
-#from matplotlib.mlab import psd
+#from pylab import specgram, psd
+from matplotlib.mlab import psd
 import numpy as np
 import sklearn as skl
-from sklearn import cluster
-from sklearn import metrics
-from sklearn import hmm
+import random
+
 from scipy import spatial
 from scipy.stats.stats import pearsonr, spearmanr
 import matplotlib.pyplot as plt
@@ -22,8 +21,10 @@ import random as rnd
 from array import array
 import cPickle as pk
 import marshal as ml
-from mahotas import otsu
-
+#from mahotas import otsu
+import evsonganaly
+import songtools2 as songtools
+from analyze_songs import analyze_song
 
 """This script creates gaussian mixture models for two different songs then calculates the K-L divergence
 between the two mixture models.  It expects you to know how many syllables there are in both songs.
@@ -98,142 +99,171 @@ def getsyls(a):
  objs=[y for y in objs if int(len(a[y]))>10*frqs]
  return sylables,objs,frq
 
+def comparesongs(array_of_syls1,array_of_syls2,k,k2,testsetsize):
+ random.shuffle(array_of_syls1)
+ random.shuffle(array_of_syls2)
 
+ fs=32000
+ nfft=2**14
+ segstart=int(round(600/(fs/float(nfft))))
+ segend=int(round(16000/(fs/float(nfft))))
+ psds=[psd(norm(x),NFFT=nfft,Fs=fs) for x in array_of_syls1]
+ segedpsds1=[norm(n[0][segstart:segend]) for n in psds]
+ psds=[psd(norm(x),NFFT=nfft,Fs=fs) for x in array_of_syls2]
+ segedpsds2=[norm(n[0][segstart:segend]) for n in psds]
+
+ basis_set=segedpsds1[:50]
+
+ if testsetsize == 'half':
+  trainsetsize1 = int(np.floor(len(segedpsds1)/2.))
+  trainsetsize2 = int(np.floor(len(segedpsds2)/2.))
+ else:
+  trainsetsize1 = int(len(segedpsds1)-testsetsize)
+  trainsetsize2 = int(len(segedpsds2)-testsetsize)
+ d1=sc.spatial.distance.cdist(segedpsds1[:trainsetsize1],basis_set,'sqeuclidean')
+ d1_2=sc.spatial.distance.cdist(segedpsds1[trainsetsize1:],basis_set,'sqeuclidean')
+ d2=sc.spatial.distance.cdist(segedpsds2[:trainsetsize2],basis_set,'sqeuclidean')
+ d2_2=sc.spatial.distance.cdist(segedpsds2[trainsetsize2:],basis_set,'sqeuclidean')
+ mx=np.max([np.max(d1),np.max(d2),np.max(d1_2),np.max(d2_2)])
+
+ s1=1-(d1/mx)
+ s1_2=1-(d1_2/mx)
+ s2=1-(d2/mx)
+ s2_2=1-(d2_2/mx)
+
+ mod1=mixture.GMM(n_components=k,n_iter=100000,covariance_type='diag')
+ mod1.fit(s1)
+
+ mod2=mixture.GMM(n_components=k2,n_iter=100000,covariance_type='diag')
+ mod2.fit(s2[:1000])
+
+ len2=len(s2)
+ len1=len(d1)
+
+ score1_1= mod1.score(s1_2) #likelihood of model 1 given withheld set 1
+ score2_1=mod2.score(s1_2) #likelihood of model 2 given withheld set 1'''
+
+ score1_2=mod1.score(s2_2) #likelihood of model 1 given withheld set 2'''
+ score2_2=mod2.score(s2_2) #likelihood of model 2 given withheld set 2'''
+
+ len2=float(len(basis_set))
+ len1=float(len(basis_set))
+
+ score1= np.log2(np.e)*((np.mean(score1_1))-(np.mean(score2_1))) #how much information is lost when model 2 is used to explain song 1'''
+ score2= np.log2(np.e)*((np.mean(score2_2))-(np.mean(score1_2))) #how much information is lost when model 1 is used to explain song 2 '''
+ sem1=np.log2(np.e)*((sc.stats.sem(score1_1))-(sc.stats.sem(score2_1)))
+ sem2=np.log2(np.e)*((sc.stats.sem(score2_2))-(sc.stats.sem(score1_2)))
+
+ score1=score1/len1
+ score2=score2/len2
+ sem1=sem1/len1
+ sem2=sem2/len2
+ return score1,score2,sem1,sem2
 #main program
-path1=sys.argv[1]
-path2=sys.argv[2]
-fils1=[x for x in os.listdir(path1) if x[-4:]=='.wav' and 'hp' not in x]
-fils2=[x for x in os.listdir(path2) if x[-4:]=='.wav' and 'hp' not in x]
+if __name__ =='__main__':
+ path1=sys.argv[1]
+ path2=sys.argv[2]
+ batchfile1 = path1+'/batch.keep'
+ batchfile2 = path2+'/batch.keep'
+ ff = open(batchfile1)
+ fils1 = [line.rstrip() for line in ff]
+ ff.close()
+ ff = open(batchfile2)
+ fils2 = [line.rstrip() for line in ff]
+ ff.close()
+ # fils1=[x for x in os.listdir(path1) if x[-4:]=='cbin' and 'hp' not in x]
+ # fils2=[x for x in os.listdir(path2) if x[-4:]=='cbin' and 'hp' not in x]
 
-filename1=path1.split('/')[-2]
-filename2=path2.split('/')[-2]
-#foldname=path2.split('/')[-3]
-'''outpath=(path2+filename1+'_'+filename2+'comp_out/')
-if not os.path.exists(outpath):
- os.mkdir(outpath)
-outdict={}'''
+ filename1=path1.split('/')[-2]
+ filename2=path2.split('/')[-2]
 
-k=int(sys.argv[3])
-k2=int(sys.argv[4])
+ k=int(sys.argv[3])
+ k2=int(sys.argv[4])
 
-syls1=[]
-objss1=[]
-for file in fils1:
- song=impwav(path1+file)
- if len(song)<1: break
- syls,objs,frq=(getsyls(song))
- objss1.append(objs)
- syls1.append([frq]+syls)
- #for x in syls: syls1.append(x)
+ testsetsize = int(sys.argv[5])
 
-syls2=[]
-objss2=[]
-for file in fils2:
- song=impwav(path2+file)
- if len(song)<1: break
- syls,objs,frq=(getsyls(song))
- objss2.append(objs)
- syls2.append([frq]+syls)
- #for x in syls: syls2.append(x)
-#print len(syls2)
-#print len(syls1)
-segedpsds1=[]
-for x in syls1:
- fs=x[0]
- nfft=int(round(2**14/32000.0*fs))
- segstart=int(round(600/(fs/float(nfft))))
- segend=int(round(16000/(fs/float(nfft))))
- psds=[psd(norm(y),NFFT=nfft,Fs=fs) for y in x[1:]]
- spsds=[norm(n[0][segstart:segend]) for n in psds]
- for n in spsds: segedpsds1.append(n)
+ syls1=[]
+ for file in fils1:
+  _,syls = analyze_song(path1+file,use_evsonganaly=True,filetype='cbin')
+  if len(song)<1: break
+  syls1.append(syls)
 
-segedpsds2=[]
-for x in syls2:
- fs=x[0]
- nfft=int(round(2**14/32000.0*fs))
- segstart=int(round(600/(fs/float(nfft))))
- segend=int(round(16000/(fs/float(nfft))))
- psds=[psd(norm(y),NFFT=nfft,Fs=fs) for y in x[1:]]
- spsds=[norm(n[0][segstart:segend]) for n in psds]
- for n in spsds: segedpsds2.append(n)
+ syls2=[]
+ for file in fils2:
+  _,syls = analyze_song(path2+file,use_evsonganaly=True,filetype='cbin')
+  if len(song)<1: break
+  syls2.append(syls)
 
+ segedpsds1=[]
+ for x in syls1:
+  fs=32000
+  nfft=2**14
+  segstart=int(round(600/(fs/float(nfft))))
+  segend=int(round(16000/(fs/float(nfft))))
+  psds=[psd(norm(y),NFFT=nfft,Fs=fs) for y in x[1:]]
+  spsds=[norm(n[0][segstart:segend]) for n in psds]
+  for n in spsds: segedpsds1.append(n)
 
-basis_set=segedpsds1[:50]
+ segedpsds2=[]
+ for x in syls2:
+  fs=32000
+  nfft=int(round(2**14/32000.0*fs))
+  segstart=int(round(600/(fs/float(nfft))))
+  segend=int(round(16000/(fs/float(nfft))))
+  psds=[psd(norm(y),NFFT=nfft,Fs=fs) for y in x[1:]]
+  spsds=[norm(n[0][segstart:segend]) for n in psds]
+  for n in spsds: segedpsds2.append(n)
 
-segedpsds_all=[]
+ basis_set=segedpsds1[:50]
 
-for x in segedpsds1[:1000]:
- segedpsds_all.append(x)
+ if testsetsize == 'half':
+  trainsetsize1 = floor(len(segedpsds1)/2.)
+  trainsetsize2 = floor(len(segedpsds2)/2.)
+ else:
+  trainsetsize1 = len(segedpsds1)-testsetsize
+  trainsetsize2 = len(segedpsds2)-testsetsize
+ d1=sc.spatial.distance.cdist(segedpsds1[:trainsetsize1],basis_set,'sqeuclidean')
+ d1_2=sc.spatial.distance.cdist(segedpsds1[trainsetsize1:],basis_set,'sqeuclidean')
+ d2=sc.spatial.distance.cdist(segedpsds2[:trainsetsize2],basis_set,'sqeuclidean')
+ d2_2=sc.spatial.distance.cdist(segedpsds2[trainsetsize2:],basis_set,'sqeuclidean')
+ mx=np.max([np.max(d1),np.max(d2),np.max(d1_2),np.max(d2_2)])
 
-for x in segedpsds2[:1000]:
- segedpsds_all.append(x)
+ s1=1-(d1/mx)
+ s1_2=1-(d1_2/mx)
+ s2=1-(d2/mx)
+ s2_2=1-(d2_2/mx)
 
-d1=sc.spatial.distance.cdist(segedpsds1[:1000],basis_set,'sqeuclidean')
+ mod1=mixture.GMM(n_components=k,n_iter=100000,covariance_type='diag')
+ mod1.fit(s1)
 
+ mod2=mixture.GMM(n_components=k2,n_iter=100000,covariance_type='diag')
+ mod2.fit(s2[:1000])
 
-d1_2=sc.spatial.distance.cdist(segedpsds1[1000:2000],basis_set,'sqeuclidean')
+ len2=len(s2)
+ len1=len(d1)
 
+ score1_1= mod1.score(s1_2) #likelihood of model 1 given withheld set 1
+ score2_1=mod2.score(s1_2) #likelihood of model 2 given withheld set 1'''
 
-d2=sc.spatial.distance.cdist(segedpsds2[:1000],basis_set,'sqeuclidean')
+ score1_2=mod1.score(s2_2) #likelihood of model 1 given withheld set 2'''
+ score2_2=mod2.score(s2_2) #likelihood of model 2 given withheld set 2'''
 
-d2_2=sc.spatial.distance.cdist(segedpsds2[1000:2000],basis_set,'sqeuclidean')
+ len2=float(len(basis_set))
+ len1=float(len(basis_set))
 
-mx=np.max([np.max(d1),np.max(d2),np.max(d1_2),np.max(d2_2)])
+ score1= np.log2(np.e)*((np.mean(score1_1))-(np.mean(score2_1))) #how much information is lost when model 2 is used to explain song 1'''
+ score2= np.log2(np.e)*((np.mean(score2_2))-(np.mean(score1_2))) #how much information is lost when model 1 is used to explain song 2 '''
+ sem1=np.log2(np.e)*((sc.stats.sem(score1_1))-(sc.stats.sem(score2_1)))
+ sem2=np.log2(np.e)*((sc.stats.sem(score2_2))-(sc.stats.sem(score1_2)))
 
-s1=1-(d1/mx)
-s1_2=1-(d1_2/mx)
-s2=1-(d2/mx)
-s2_2=1-(d2_2/mx)
+ score1=score1/len1
+ score2=score2/len2
+ sem1=sem1/len1
+ sem2=sem2/len2
 
-mod1=mixture.GMM(n_components=k,n_iter=100000,covariance_type='diag')
-mod1.fit(s1)
+ print filename1+'\t'+filename2+'\t'+str(len2)+'\t'+str(score1)+'\t'+str(score2)+'\t'+str(sem1)+'\t'+str(sem2)
 
-mod2=mixture.GMM(n_components=k2,n_iter=100000,covariance_type='diag')
-mod2.fit(s2[:1000])
+ #print filename1+'\t'+filename2+'\t'+str(len2)+'\t'+str(score1)+'\t'+str(score2)+'\t'+str(sem1)+'\t'+str(sem2)+'\t'+str(np.mean(score1_1))+'\t'+str(np.mean(score2_1))+'\t'+str(np.mean(score1_2))+'\t'+str(np.mean(score2_2))
 
-len2=len(s2)
-len1=len(d1)
-#print len1
-
-score1_1= mod1.score(s1_2)
-score2_1=mod2.score(s1_2)
-
-score1_2=mod1.score(s2_2)
-score2_2=mod2.score(s2_2)
-
-len2=float(len(basis_set))
-len1=float(len(basis_set))
-
-
-
-'''score1= np.log2(np.e)*(np.mean(score1_1)/len(s1_2_1))-(np.mean(score2_1)/len(s1_2_1))
-score2= np.log2(np.e)*(np.mean(score2_2)/len(s2[len1:]))-(np.mean(score1_2)/len(s2[len1:]))
-sem1=np.log2(np.e)*(sc.stats.sem(score1_1)/float(len(s1_2_1)))-(sc.stats.sem(score2_1)/float(len(s1_2_1)))
-sem2=np.log2(np.e)*(sc.stats.sem(score2_2)/len(s2[len1:]))-(sc.stats.sem(score1_2)/len(s2[len1:]))'''
-
-score1= np.log2(np.e)*((np.mean(score1_1))-(np.mean(score2_1)))
-score2= np.log2(np.e)*((np.mean(score2_2))-(np.mean(score1_2)))
-sem1=np.log2(np.e)*((sc.stats.sem(score1_1))-(sc.stats.sem(score2_1)))
-sem2=np.log2(np.e)*((sc.stats.sem(score2_2))-(sc.stats.sem(score1_2)))
-
-score1=score1/len1
-score2=score2/len2
-sem1=sem1/len1
-sem2=sem2/len2
-
-
-#lab= mod1.predict(s2)
-
-print filename1+'\t'+filename2+'\t'+str(len2)+'\t'+str(score1)+'\t'+str(score2)+'\t'+str(sem1)+'\t'+str(sem2)
-
-#print filename1+'\t'+filename2+'\t'+str(len2)+'\t'+str(score1)+'\t'+str(score2)+'\t'+str(sem1)+'\t'+str(sem2)+'\t'+str(np.mean(score1_1))+'\t'+str(np.mean(score2_1))+'\t'+str(np.mean(score1_2))+'\t'+str(np.mean(score2_2))
-
-'''outdict['mod1']=mod1
-outdict['mod2']=mod2
-outdict['scores1']=score1_1
-outdict['labels']=lab
-outdict['modbd']=filename1
-outdict['compbd']=filename2
-pk.dump(outdict,open(outpath+'outdict','w'))'''
 
 
