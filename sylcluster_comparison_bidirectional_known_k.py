@@ -159,6 +159,11 @@ def comparesongs(array_of_syls1,array_of_syls2,k,k2,testsetsize):
  sem1=sem1/len1
  sem2=sem2/len2
  return score1,score2,sem1,sem2
+
+def
+
+
+
 #main program
 if __name__ =='__main__':
  path1=sys.argv[1]
